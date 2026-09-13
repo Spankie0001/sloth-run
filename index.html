@@ -113,6 +113,48 @@ function blip(freq, dur, type='square', vol=.05, slide=0){
   o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime+dur);
 }
 
+
+// Power saw: two detuned sawtooths, revving pitch, chopped by a fast LFO, through a lowpass
+function powerSaw(dur=1.1){
+  if (!ac) return;
+  const t=ac.currentTime, g=ac.createGain(), lp=ac.createBiquadFilter(), lfo=ac.createOscillator(), lfoG=ac.createGain();
+  lp.type='lowpass'; lp.frequency.setValueAtTime(900,t); lp.frequency.exponentialRampToValueAtTime(2200,t+.35); lp.frequency.exponentialRampToValueAtTime(700,t+dur);
+  g.gain.setValueAtTime(.0001,t); g.gain.exponentialRampToValueAtTime(.09,t+.06); g.gain.setValueAtTime(.09,t+dur-.25); g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  lfo.type='square'; lfo.frequency.setValueAtTime(28,t); lfo.frequency.linearRampToValueAtTime(45,t+.4); lfo.frequency.linearRampToValueAtTime(22,t+dur);
+  lfoG.gain.value=.04; lfo.connect(lfoG).connect(g.gain);
+  for (const det of [0,7]){
+    const o=ac.createOscillator(); o.type='sawtooth'; o.detune.value=det;
+    o.frequency.setValueAtTime(70,t); o.frequency.exponentialRampToValueAtTime(180,t+.3); o.frequency.exponentialRampToValueAtTime(95,t+dur);
+    o.connect(lp); o.start(t); o.stop(t+dur);
+  }
+  lp.connect(g).connect(ac.destination); lfo.start(t); lfo.stop(t+dur);
+}
+
+
+// Callouts: play <name>.mp3 if present next to index.html, else browser text-to-speech; also pops text on screen
+function makeClip(file){ const a=new Audio(file); a.ok=false; a.addEventListener('canplaythrough',()=>{a.ok=true;}); a.addEventListener('error',()=>{a.ok=false;}); return a; }
+const CLIPS={ bust:makeClip('fuckyeah.mp3'), power:makeClip('slothingtime.mp3') };
+let popups=[];
+function callout(kind,x,y,text,say){
+  popups.push({x,y,t:0,text});
+  const clip=CLIPS[kind];
+  if (clip && clip.ok){ clip.currentTime=0; clip.play().catch(()=>{}); return; }
+  if ('speechSynthesis' in window){
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(say); u.rate=1.15; u.pitch=.7; u.volume=1;
+    speechSynthesis.speak(u);
+  }
+}
+function drawPopups(dt){
+  popups=popups.filter(p=>(p.t+=dt)<1);
+  for (const p of popups){
+    const a=1-p.t, px=p.x*T+T/2, py=p.y*T+T/2-p.t*28;
+    ctx.save(); ctx.globalAlpha=a; ctx.font='12px "Press Start 2P",monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.lineWidth=4; ctx.strokeStyle='#151827'; ctx.strokeText(p.text,px,py);
+    ctx.fillStyle='#f2c14e'; ctx.fillText(p.text,px,py); ctx.restore();
+  }
+}
+
 // ---------- Entities ----------
 function makeEntity(x,y,speed){ return {tx:x,ty:y,dir:null,want:null,prog:0,speed}; }
 const renderPos = e => ({x:e.tx+(e.dir?e.dir.x*e.prog:0), y:e.ty+(e.dir?e.dir.y*e.prog:0)});
@@ -178,7 +220,7 @@ function eatAt(e){
   if (c==='.'){ grid[e.ty][e.tx]=' '; score+=10; pillsLeft--; buzz=Math.min(1,buzz+.06); blip(880,.06,'square',.03,-200); }
   else if (c==='o'){ grid[e.ty][e.tx]=' '; score+=50; pillsLeft--; buzz=Math.min(1,buzz+.25);
     frightT = Math.max(3, 8-(level-1)*.7); chasers.forEach(g=>{ if(g.mode==='chase'||g.mode==='exit') g.mode='fright'; g.want=null; });
-    blip(220,.4,'sawtooth',.05,300); }
+    powerSaw(); callout('power',e.tx,e.ty,'SLOTH-ing TIME!','Slothing time!'); }
   else return;
   updateHud();
   if (pillsLeft<=0){ setState('win',2.5); blip(660,.6,'triangle',.06,400); }
@@ -262,7 +304,7 @@ function update(dt){
     const a=renderPos(player), b=renderPos(g);
     let dx=Math.abs(a.x-b.x); dx=Math.min(dx, W-dx);
     if (Math.hypot(dx, a.y-b.y) < .62){
-      if (g.mode==='fright'){ g.mode='return'; score+=200; buzz=Math.min(1,buzz+.15); blip(150,.25,'square',.06,600); updateHud(); }
+      if (g.mode==='fright'){ g.mode='return'; score+=200; callout('bust',player.tx,player.ty,'FUCK YEAH','Fuck yeah!'); buzz=Math.min(1,buzz+.15); blip(150,.25,'square',.06,600); updateHud(); }
       else if (g.mode==='chase'||g.mode==='exit'){ lives--; setState('dying',1.6); blip(400,1.2,'sawtooth',.06,-370); updateHud(); break; }
     }
   }
@@ -375,6 +417,7 @@ function draw(){
   drawMaze();
   chasers.forEach(g=>{ if(g.mode!=='den') drawChaser(g); else { const p=renderPos(g); ctx.globalAlpha=.6; drawChaser(g); ctx.globalAlpha=1; } });
   drawSloth();
+  drawPopups(lastDt);
   if (state==='ready'){ banner('Ready'); }
   if (state==='win'){ banner('Maze cleared'); }
 }
@@ -392,9 +435,9 @@ function updateHud(){
 }
 
 // ---------- Loop ----------
-let last=0;
+let last=0, lastDt=0;
 function frame(t){
-  const dt=Math.min(.05,(t-last)/1000||0); last=t;
+  const dt=Math.min(.05,(t-last)/1000||0); last=t; lastDt=dt;
   update(dt);
   $('buzzbar').style.width=(buzz*100)+'%';
   if (state==='over'){ showMsg('Busted', 'Score '+score+(score>=high&&score>0?' ... new best':''), 'Play again'); state='idle'; }
